@@ -31,7 +31,7 @@ The dynamically loaded symbols from `libtransport.so` use non-standard casing (e
 The K1 Pro screens require specific image formats:
 * JPEG format.
 * Resize exactly to `64x64`.
-* Rotate -90 degrees (which is equivalent to `.rotate270()` in the `image` crate).
+* Rotate -90 degrees (which is equivalent to `.rotate90()` in the `image` crate).
 * Perform this conversion safely and make sure to lock the writing stream to avoid concurrent FFI collisions.
 
 ---
@@ -42,3 +42,13 @@ The K1 Pro screens require specific image formats:
 2. **Build and Check**: Run `cargo check` and `cargo build --release` to ensure 0 errors and 0 warnings.
 3. **Local Deploy**: Run `just install` to copy the release artifacts to the OpenDeck plugins directory.
 4. **Verification**: Verify the logs under `~/.local/share/opendeck/logs/plugins/st.lynx.plugins.opendeck-k1pro.sdPlugin.log` to confirm the plugin is communicating properly with the hardware.
+
+---
+
+## Profile & Page Switching (Host-Controlled)
+
+The plugin behaves as a stateless input driver and does not contain hardcoded logic for switching scenes or pages:
+* **Stateless Event Forwarding**: Rotations and clicks on Knobs 1, 2, and 3 (encoders 0, 1, and 2) are forwarded to the OpenDeck host immediately as standard `encoder_change` and keypress events.
+* **UI Mapping**: All scene and page switching logic is configured dynamically by the user via the OpenDeck host dashboard (e.g. mapping Encoder 0/1 to switch profiles/pages). The host intercepts the encoder events and handles profile switching internally.
+* **No Local State**: Do not implement custom layout-switching or directory-watching logic inside the plugin.
+
