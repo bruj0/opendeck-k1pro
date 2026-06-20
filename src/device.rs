@@ -3,7 +3,7 @@ use image::{load_from_memory_with_format, DynamicImage};
 use openaction::{OUTBOUND_EVENT_MANAGER, SetImageEvent};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -33,6 +33,9 @@ impl Device {
                 return Err(res);
             }
             (self.lib.transport_refresh)(self.handle);
+            (self.lib.transport_set_reportSize)(self.handle, 513, 1025, 0);
+            (self.lib.transport_set_reportID)(self.handle, 0x04);
+            (self.lib.transport_keyboard_os_mode_switch)(self.handle, 0);
         }
         Ok(())
     }
@@ -77,31 +80,6 @@ pub async fn device_task(
     let id = device.id.clone();
     let handle = device.handle;
     let lib = device.lib.clone();
-
-    if let Some(outbound) = OUTBOUND_EVENT_MANAGER.lock().await.as_mut() {
-        if let Err(e) = outbound
-            .register_device(
-                id.clone(),
-                "StreamDock K1 Pro".to_string(),
-                crate::mappings::ROW_COUNT as u8,
-                crate::mappings::COL_COUNT as u8,
-                crate::mappings::ENCODER_COUNT as u8,
-                0,
-            )
-            .await
-        {
-            log::error!("Failed to register device with OpenDeck host: {:?}", e);
-            return;
-        }
-    }
-
-    DEVICES.write().await.insert(id.clone(), device.clone());
-
-    let flush_notify = Arc::new(Notify::new());
-    FLUSH_NOTIFY
-        .write()
-        .await
-        .insert(id.clone(), flush_notify.clone());
 
     let tracker = TRACKER.lock().await.clone();
     
@@ -151,20 +129,24 @@ async fn device_events_task(device: Arc<Device>, id: String, token: Cancellation
             (device.lib.transport_read)(device.handle, buffer.as_mut_ptr(), &mut length, 100)
         };
 
-        if res == 0 && length >= 12 {
+        if res == 0 {
             let data = &buffer[..length];
+            if length > 0 {
+                log::debug!("Raw HID read from K1 Pro: len={}, bytes={:?}", length, &data[..std::cmp::min(16, length)]);
+            }
             // Verify report ID = 4 and ACK prefix [A, C, K]
-            if data[0] == 0x04 && data[1] == 65 && data[2] == 67 && data[3] == 75 {
+            if length >= 12 && data[0] == 0x04 && data[1] == 65 && data[2] == 67 && data[3] == 75 {
                 let hw_code = data[10];
                 let state = data[11];
                 
-                log::debug!("Read hardware event: code={:#04x}, state={}", hw_code, state);
+                log::info!("Received K1 Pro raw event: code={:#04x}, state={}", hw_code, state);
                 
                 let normalized_state = if state == 0x01 { 1 } else { 0 };
 
                 if let Some(outbound) = OUTBOUND_EVENT_MANAGER.lock().await.as_mut() {
                     // 1. Regular LCD buttons
                     if let Some(logical_pos) = crate::mappings::device_to_opendeck(hw_code) {
+                        log::info!("Mapping code {:#04x} to LCD key {}. State: {}", hw_code, logical_pos, normalized_state);
                         if normalized_state == 1 {
                             outbound.key_down(id.clone(), logical_pos).await.ok();
                         } else {
@@ -179,6 +161,7 @@ async fn device_events_task(device: Arc<Device>, id: String, token: Cancellation
                             0x31 => 2,
                             _ => unreachable!(),
                         };
+                        log::info!("Mapping code {:#04x} to Encoder {} Click. State: {}", hw_code, knob_idx, normalized_state);
                         if normalized_state == 1 {
                             outbound.encoder_down(id.clone(), knob_idx).await.ok();
                         } else {
@@ -196,7 +179,14 @@ async fn device_events_task(device: Arc<Device>, id: String, token: Cancellation
                             0x91 => (2u8, 1i16),
                             _ => unreachable!(),
                         };
-                        outbound.encoder_change(id.clone(), knob_idx, ticks).await.ok();
+                        log::info!("Mapping code {:#04x} to Encoder {} Rotation. Ticks: {}", hw_code, knob_idx, ticks);
+                        if let Err(e) = outbound.encoder_change(id.clone(), knob_idx, ticks).await {
+                            log::error!("Failed to forward Encoder {} change to OpenDeck host: {:?}", knob_idx, e);
+                        } else {
+                            log::info!("Successfully forwarded Encoder {} change (ticks={}) to host", knob_idx, ticks);
+                        }
+                    } else {
+                        log::warn!("Unhandled K1 Pro hardware event code: {:#04x}", hw_code);
                     }
                 }
             }
@@ -217,7 +207,11 @@ async fn device_heartbeat_task(device: Arc<Device>, token: CancellationToken) {
             _ = tokio::time::sleep(Duration::from_secs(10)) => {
                 let _guard = device.write_lock.lock().await;
                 unsafe {
-                    (device.lib.transport_heartbeat)(device.handle);
+                    let res = (device.lib.transport_heartbeat)(device.handle);
+                    log::debug!("Heartbeat result: {:#08x}", res);
+                    (device.lib.transport_set_reportSize)(device.handle, 513, 1025, 0);
+                    (device.lib.transport_set_reportID)(device.handle, 0x04);
+                    (device.lib.transport_keyboard_os_mode_switch)(device.handle, 0);
                 }
             }
             _ = token.cancelled() => break,
@@ -250,10 +244,10 @@ pub async fn handle_set_image(
             // 1. Convert to RGB8 to handle transparency correctly
             let rgb_img = image.to_rgb8();
 
-            // 2. Rotate -90 degrees (which is 270 degrees clockwise)
-            let rotated = DynamicImage::ImageRgb8(rgb_img).rotate270();
+            // 2. Rotate -90 degrees (which is 90 degrees clockwise)
+            let rotated = DynamicImage::ImageRgb8(rgb_img).rotate90();
 
-            // 3. Convert to RGB8 again since rotate270 returns DynamicImage
+            // 3. Convert to RGB8 again since rotate90 returns DynamicImage
             let rgb_rotated = rotated.to_rgb8();
 
             // 4. Resize to 64x64
@@ -264,10 +258,15 @@ pub async fn handle_set_image(
                 image::imageops::FilterType::Lanczos3,
             );
 
-            // 5. Encode back to JPEG stream
+            // 5. Encode back to JPEG stream with quality 90 to match official SDK and avoid hardware decoder failures
             let mut jpeg_bytes = Vec::new();
-            let mut cursor = std::io::Cursor::new(&mut jpeg_bytes);
-            DynamicImage::ImageRgb8(resized).write_to(&mut cursor, image::ImageFormat::Jpeg)?;
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, 90);
+            encoder.encode(
+                resized.as_raw(),
+                64,
+                64,
+                image::ColorType::Rgb8.into(),
+            )?;
 
             if let Some(hw_key) = opendeck_to_device(position) {
                 unsafe {
@@ -299,6 +298,12 @@ pub async fn handle_set_image(
             }
         }
         _ => {}
+    }
+
+    unsafe {
+        (device.lib.transport_set_reportSize)(device.handle, 513, 1025, 0);
+        (device.lib.transport_set_reportID)(device.handle, 0x04);
+        (device.lib.transport_keyboard_os_mode_switch)(device.handle, 0);
     }
 
     Ok(())

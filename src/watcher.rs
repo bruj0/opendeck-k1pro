@@ -47,9 +47,9 @@ pub async fn watcher_task(lib: Arc<TransportLib>, token: CancellationToken) {
                                 (lib.transport_set_reportSize)(handle, 513, 1025, 0);
                                 (lib.transport_set_reportID)(handle, 0x04);
                                 
-                                // Initialize default backlight settings (Cyan, brightness 4)
-                                (lib.transport_set_keyboard_backlight_brightness)(handle, 4);
-                                (lib.transport_set_keyboard_rgb_backlight)(handle, 0, 150, 255);
+                                // Wake the screen, set LCD brightness, clear all icons, and refresh to register connection
+                                (lib.transport_wakeup_screen)(handle);
+                                (lib.transport_set_key_brightness)(handle, 100);
                                 (lib.transport_clear_all_keys)(handle);
                                 (lib.transport_refresh)(handle);
 
@@ -58,6 +58,18 @@ pub async fn watcher_task(lib: Arc<TransportLib>, token: CancellationToken) {
                                 let firmware_version = c_char_to_string(fw_buf.as_ptr());
 
                                 log::info!("Registered K1 Pro device. Firmware version: {}", firmware_version);
+
+                                // Initialize default backlight settings (Cyan, brightness 4, static effect)
+                                (lib.transport_set_keyboard_backlight_brightness)(handle, 4);
+                                (lib.transport_set_keyboard_lighting_speed)(handle, 3);
+                                (lib.transport_set_keyboard_lighting_effects)(handle, 0);
+                                (lib.transport_set_keyboard_rgb_backlight)(handle, 0, 150, 255);
+                                
+                                // Ensure report size and ID are 0x04 and switch OS mode to Windows
+                                (lib.transport_set_reportSize)(handle, 513, 1025, 0);
+                                (lib.transport_set_reportID)(handle, 0x04);
+                                let res_os = (lib.transport_keyboard_os_mode_switch)(handle, 0);
+                                log::info!("OS mode switch result for {}: {}", id, res_os);
 
                                 let device = Arc::new(Device {
                                     id: id.clone(),

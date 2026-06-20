@@ -35,9 +35,13 @@ pub struct TransportLib {
     pub transport_set_reportSize: Symbol<'static, unsafe extern "C" fn(TransportHandle, u16, u16, u16) -> u32>,
     pub transport_set_reportID: Symbol<'static, unsafe extern "C" fn(TransportHandle, u8) -> u32>,
     pub transport_get_firmware_version: Symbol<'static, unsafe extern "C" fn(TransportHandle, *mut libc::c_char, usize) -> u32>,
+    pub transport_wakeup_screen: Symbol<'static, unsafe extern "C" fn(TransportHandle) -> u32>,
     pub transport_set_key_brightness: Symbol<'static, unsafe extern "C" fn(TransportHandle, u8) -> u32>,
     pub transport_set_keyboard_backlight_brightness: Symbol<'static, unsafe extern "C" fn(TransportHandle, u8) -> u32>,
+    pub transport_set_keyboard_lighting_effects: Symbol<'static, unsafe extern "C" fn(TransportHandle, u8) -> u32>,
+    pub transport_set_keyboard_lighting_speed: Symbol<'static, unsafe extern "C" fn(TransportHandle, u8) -> u32>,
     pub transport_set_keyboard_rgb_backlight: Symbol<'static, unsafe extern "C" fn(TransportHandle, u8, u8, u8) -> u32>,
+    pub transport_keyboard_os_mode_switch: Symbol<'static, unsafe extern "C" fn(TransportHandle, u8) -> u32>,
     pub transport_set_key_image_stream: Symbol<'static, unsafe extern "C" fn(TransportHandle, *const libc::c_char, usize, u8) -> u32>,
     pub transport_clear_all_keys: Symbol<'static, unsafe extern "C" fn(TransportHandle) -> u32>,
     pub fn_transport_clear_key: Symbol<'static, unsafe extern "C" fn(TransportHandle, u8) -> u32>,
@@ -67,9 +71,13 @@ impl TransportLib {
         let transport_set_reportSize = load_sym!(b"transport_set_reportSize\0", unsafe extern "C" fn(TransportHandle, u16, u16, u16) -> u32);
         let transport_set_reportID = load_sym!(b"transport_set_reportID\0", unsafe extern "C" fn(TransportHandle, u8) -> u32);
         let transport_get_firmware_version = load_sym!(b"transport_get_firmware_version\0", unsafe extern "C" fn(TransportHandle, *mut libc::c_char, usize) -> u32);
+        let transport_wakeup_screen = load_sym!(b"transport_wakeup_screen\0", unsafe extern "C" fn(TransportHandle) -> u32);
         let transport_set_key_brightness = load_sym!(b"transport_set_key_brightness\0", unsafe extern "C" fn(TransportHandle, u8) -> u32);
         let transport_set_keyboard_backlight_brightness = load_sym!(b"transport_set_keyboard_backlight_brightness\0", unsafe extern "C" fn(TransportHandle, u8) -> u32);
+        let transport_set_keyboard_lighting_effects = load_sym!(b"transport_set_keyboard_lighting_effects\0", unsafe extern "C" fn(TransportHandle, u8) -> u32);
+        let transport_set_keyboard_lighting_speed = load_sym!(b"transport_set_keyboard_lighting_speed\0", unsafe extern "C" fn(TransportHandle, u8) -> u32);
         let transport_set_keyboard_rgb_backlight = load_sym!(b"transport_set_keyboard_rgb_backlight\0", unsafe extern "C" fn(TransportHandle, u8, u8, u8) -> u32);
+        let transport_keyboard_os_mode_switch = load_sym!(b"transport_keyboard_os_mode_switch\0", unsafe extern "C" fn(TransportHandle, u8) -> u32);
         let transport_set_key_image_stream = load_sym!(b"transport_set_key_image_stream\0", unsafe extern "C" fn(TransportHandle, *const libc::c_char, usize, u8) -> u32);
         let transport_clear_all_keys = load_sym!(b"transport_clear_all_keys\0", unsafe extern "C" fn(TransportHandle) -> u32);
         let fn_transport_clear_key = load_sym!(b"transport_clear_key\0", unsafe extern "C" fn(TransportHandle, u8) -> u32);
@@ -87,9 +95,13 @@ impl TransportLib {
             transport_set_reportSize,
             transport_set_reportID,
             transport_get_firmware_version,
+            transport_wakeup_screen,
             transport_set_key_brightness,
             transport_set_keyboard_backlight_brightness,
+            transport_set_keyboard_lighting_effects,
+            transport_set_keyboard_lighting_speed,
             transport_set_keyboard_rgb_backlight,
+            transport_keyboard_os_mode_switch,
             transport_set_key_image_stream,
             transport_clear_all_keys,
             fn_transport_clear_key,
