@@ -1,0 +1,19 @@
+{
+  "Name": "StreamDock K1 Pro",
+  "Description": "Device support plugin for StreamDock K1 Pro (+variants)",
+  "Author": "Rodrigo Leven <rodrigo.leven@gmail.com>",
+  "Version": "0.1.0",
+  "PluginUUID": "st.lynx.plugins.opendeck-k1pro",
+  "CodePathLin": "opendeck-k1pro-linux",
+  "CodePathMac": "opendeck-k1pro-mac",
+  "CodePathWin": "opendeck-k1pro-win.exe",
+  "Icon": "assets/icon",
+  "Category": "Hardware",
+  "OS": [
+    { "Platform": "linux" },
+    { "Platform": "mac", "MinimumVersion": "11.3" },
+    { "Platform": "windows", "MinimumVersion": "10" }
+  ],
+  "Actions": [],
+  "DeviceNamespace": "k1"
+}
