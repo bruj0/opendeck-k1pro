@@ -21,7 +21,7 @@ pub struct Device {
     pub lib: Arc<TransportLib>,
     pub write_lock: Mutex<()>,
     pub standalone_mode: Mutex<bool>,
-    pub standalone_initial_scr: Mutex<Option<i64>>,
+    pub standalone_current_scr: Mutex<Option<i64>>,
     pub path_int0: Option<String>,
     pub path_int1: String,
     pub last_host_transition: Mutex<std::time::Instant>,
@@ -58,8 +58,8 @@ impl Device {
                 }
             }
             *mode = true;
-            let mut initial_scr = self.standalone_initial_scr.lock().await;
-            *initial_scr = None;
+            let mut current_scr = self.standalone_current_scr.lock().await;
+            *current_scr = Some(0);
             
             let mut last_trans = self.last_standalone_transition.lock().await;
             *last_trans = std::time::Instant::now();
@@ -269,11 +269,15 @@ async fn device_events_task(device: Arc<Device>, id: String, token: Cancellation
                                 let json_str = String::from_utf8_lossy(&json_bytes[..null_pos]);
                                 if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&json_str) {
                                     if let Some(scr) = json_val.get("scr").and_then(|v| v.as_i64()) {
-                                        let mut initial_scr = device.standalone_initial_scr.lock().await;
-                                        if let Some(init_scr) = *initial_scr {
-                                            if scr != init_scr {
-                                                log::info!("Detected standalone page change (scr: {} -> {}). Reconnecting to Host-Controlled mode...", init_scr, scr);
-                                                drop(initial_scr); // Release lock before await
+                                        let mut current_scr = device.standalone_current_scr.lock().await;
+                                        let prev_scr = *current_scr;
+                                        *current_scr = Some(scr);
+                                        log::info!("Standalone page index: {}", scr);
+                                        
+                                        if let Some(prev) = prev_scr {
+                                            if prev == 1 && scr == 0 {
+                                                log::info!("Detected standalone page change from turn (1) to click (0). Reconnecting to Host-Controlled mode...");
+                                                drop(current_scr); // Release lock before await
                                                 
                                                 // Close raw file first to release the hidraw device
                                                 raw_file = None;
@@ -284,9 +288,6 @@ async fn device_events_task(device: Arc<Device>, id: String, token: Cancellation
                                                 tokio::time::sleep(Duration::from_millis(5)).await;
                                                 continue;
                                             }
-                                        } else {
-                                            *initial_scr = Some(scr);
-                                            log::info!("Stored initial standalone page index: {}", scr);
                                         }
                                     }
                                 }
@@ -469,10 +470,19 @@ async fn device_events_int0_task(device: Arc<Device>, _id: String, token: Cancel
                     if elapsed < Duration::from_millis(1000) {
                         log::info!("Ignoring Interface 0 activity right after standalone transition. Elapsed: {:?}", elapsed);
                     } else {
-                        log::info!("Activity detected on K1 Pro Interface 0 (Standalone). Reconnecting to Host-Controlled mode...");
-                        raw_file = None; // Close file before transition
-                        if let Err(e) = device.switch_to_host_controlled().await {
-                            log::error!("Failed to switch to host-controlled mode: {:?}", e);
+                        let current_scr = {
+                            let scr_guard = device.standalone_current_scr.lock().await;
+                            *scr_guard
+                        };
+                        
+                        if current_scr == Some(1) {
+                            log::info!("Ignoring Interface 0 activity because device is on turn page (scr: 1).");
+                        } else {
+                            log::info!("Activity detected on K1 Pro Interface 0 (Standalone, scr: {:?}). Reconnecting to Host-Controlled mode...", current_scr);
+                            raw_file = None; // Close file before transition
+                            if let Err(e) = device.switch_to_host_controlled().await {
+                                log::error!("Failed to switch to host-controlled mode: {:?}", e);
+                            }
                         }
                     }
                 }

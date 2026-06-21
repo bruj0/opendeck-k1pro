@@ -68,8 +68,18 @@ To prevent infinite toggle loops (e.g., when the user releases Knob 1 after swit
 * `last_host_transition`: Cooldown window (1 second) to ignore Knob 1 click events immediately after entering host mode.
 * `last_standalone_transition`: Cooldown window (1 second) to ignore Interface 0 keyboard activity immediately after entering standalone mode.
 
-### D. Re-registration Protocol
-When activity is detected in standalone mode:
+### D. Page-Based Turn-vs-Click State Machine
+In standalone mode, K1 Pro profiles use different page screens for button keycodes and encoder rotations:
+* **Page 0 (`scr: 0`)**: The default active page containing click operations.
+* **Page 1 (`scr: 1`)**: The page transitioned to during knob rotation.
+
+To ensure that knob turns do not trigger reconnection back to host-controlled mode:
+1. The plugin tracks the current active screen via `standalone_current_scr` (initialized to `Some(0)` upon entering standalone mode).
+2. The Interface 1 reader monitors page updates. If the page transitions from `1` to `0` (a knob click/release action that returns to the main page), it triggers reconnection. Transitions to `1` (rotations) are ignored.
+3. The Interface 0 keyboard report reader checks the current `scr` state. If `standalone_current_scr` is `Some(1)` (rotation page), the keyboard activity is ignored. Reconnection is only triggered if the activity occurs while on `scr: 0` (click page).
+
+### E. Re-registration Protocol
+When a reconnection condition is met:
 1. The raw file handles are closed to release the hidraw devices.
 2. The standard connection handshake is run on the primary FFI handle.
 3. The plugin sends a `deregister_device` and subsequent `register_device` event via the WebSocket client to the OpenDeck core, forcing a refresh/redrawing of all screen layouts.

@@ -107,7 +107,7 @@ pub async fn watcher_task(lib: Arc<TransportLib>, token: CancellationToken) {
                                     lib: lib.clone(),
                                     write_lock: tokio::sync::Mutex::new(()),
                                     standalone_mode: tokio::sync::Mutex::new(false),
-                                    standalone_initial_scr: tokio::sync::Mutex::new(None),
+                                    standalone_current_scr: tokio::sync::Mutex::new(None),
                                     path_int0,
                                     path_int1,
                                     last_host_transition: tokio::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)),
