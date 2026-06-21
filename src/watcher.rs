@@ -61,10 +61,43 @@ pub async fn watcher_task(lib: Arc<TransportLib>, token: CancellationToken) {
                                 log::info!("Registered K1 Pro device. Firmware version: {}", firmware_version);
 
                                 // Initialize default backlight settings (Cyan, brightness 4, static effect)
-                                (lib.transport_set_keyboard_backlight_brightness)(handle, 4);
                                 (lib.transport_set_keyboard_lighting_speed)(handle, 3);
                                 (lib.transport_set_keyboard_lighting_effects)(handle, 0);
-                                (lib.transport_set_keyboard_rgb_backlight)(handle, 0, 150, 255);
+                                
+                                // Write raw HID backlight report for default settings (Cyan at 4/6 brightness)
+                                // Scaled default color (0, 150, 255) by default brightness 4 (4/6):
+                                // R: 0
+                                // G: 150 * (4/6) * 0.47 = 47 (calibrated)
+                                // B: 255 * (4/6) = 170
+                                let write_res = (|| -> Result<(), std::io::Error> {
+                                    use std::io::Write;
+                                    let mut file = std::fs::OpenOptions::new()
+                                        .write(true)
+                                        .open(&path_int1)?;
+
+                                    let mut color_report = [0u8; 513];
+                                    color_report[0] = 0x04;
+                                    color_report[1..4].copy_from_slice(b"CRT");
+                                    color_report[6..11].copy_from_slice(b"COLOR");
+                                    color_report[11] = 100; // 4/6 of 150 brightness
+                                    color_report[12] = 0;   // R
+                                    color_report[13] = 80;  // G (gamma corrected 150)
+                                    color_report[14] = 255; // B (gamma corrected 255)
+                                    file.write_all(&color_report)?;
+
+                                    let mut cpos_report = [0u8; 513];
+                                    cpos_report[0] = 0x04;
+                                    cpos_report[1..4].copy_from_slice(b"CRT");
+                                    cpos_report[6..10].copy_from_slice(b"CPOS");
+                                    cpos_report[12] = 0x57; // 'W' for Windows
+                                    file.write_all(&cpos_report)?;
+
+                                    Ok(())
+                                })();
+
+                                if let Err(e) = write_res {
+                                    log::error!("Failed to write default raw HID backlight report to {}: {:?}", path_int1, e);
+                                }
                                 
                                 // Ensure report size and ID are 0x04 and switch OS mode to Windows
                                 (lib.transport_set_reportSize)(handle, 513, 1025, 0);
@@ -113,6 +146,11 @@ pub async fn watcher_task(lib: Arc<TransportLib>, token: CancellationToken) {
                                     last_host_transition: tokio::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)),
                                     last_standalone_transition: tokio::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)),
                                     last_non_zero_scr: tokio::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(60)),
+                                    backlight_brightness: tokio::sync::Mutex::new(4),
+                                    backlight_last_non_zero_brightness: tokio::sync::Mutex::new(4),
+                                    backlight_speed: tokio::sync::Mutex::new(3),
+                                    backlight_effect: tokio::sync::Mutex::new(0),
+                                    backlight_color: tokio::sync::Mutex::new((0, 150, 255)),
                                 });
                                 new_devices.push(device);
                             } else {

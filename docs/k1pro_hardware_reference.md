@@ -194,3 +194,53 @@ unsafe {
     (lib.transport_keyboard_os_mode_switch)(handle, 0);
 }
 ```
+
+---
+
+## 7. Keyboard Backlight and RGB LED Control
+
+The StreamDock K1 Pro features a full RGB keyboard backlight. However, the precompiled dynamic transport library FFI functions for backlight control contain critical channel truncation bugs.
+
+### FFI Library Limitations & Bugs
+1. **Missing Blue Channel**: The FFI function `transport_set_keyboard_rgb_backlight(handle, r, g, b)` only writes 3 bytes starting at offset 10 of the `COLOR` report. In the K1 Pro keyboard firmware, the `COLOR` payload layout is:
+   - Offset 10: Brightness (0–255)
+   - Offset 11: Red (0–255)
+   - Offset 12: Green (0–255)
+   - Offset 13: Blue (0–255)
+   Because the FFI function only writes 3 bytes, offset 13 (Blue) remains `0`, completely disabling the Blue channel (preventing Purple, Cyan, etc. from rendering).
+2. **Brightness Offset Bug**: The first argument `r` is written to offset 10 (interpreted as brightness), while `g` is written to Red (offset 11) and `b` is written to Green (offset 12).
+
+### The Solution: Direct Raw HID Writes
+To control the backlight, the plugin opens the Interface 1 `hidraw` device (`path_int1`) directly and writes 513-byte raw reports:
+
+1. **`COLOR` Configuration Report**:
+   * **Byte 0**: `0x04` (Report ID)
+   * **Bytes 1–3**: `b"CRT"`
+   * **Bytes 4–5**: `0x00, 0x00` (Padding)
+   * **Bytes 6–10**: `b"COLOR"`
+   * **Byte 11**: Hardware Brightness (`150` for optimal, high-saturation LED current)
+   * **Byte 12**: Red (`0` or `255`)
+   * **Byte 13**: Green (`0` or `255`)
+   * **Byte 14**: Blue (`0` or `255`)
+
+2. **`CPOS` Commit Report** (sent immediately after to commit settings):
+   * **Byte 0**: `0x04` (Report ID)
+   * **Bytes 1–3**: `b"CRT"`
+   * **Bytes 4–5**: `0x00, 0x00` (Padding)
+   * **Bytes 6–9**: `b"CPOS"`
+   * **Bytes 10–11**: `0x00, 0x00` (Padding)
+   * **Byte 12**: `0x57` (`'W'` for Windows mode commit)
+
+### Saturated Pure Color Snapping
+To prevent the physical LEDs from displaying washed-out, pale, or incorrect intermediate shades (due to human perception limits and non-linear LED mixing on linear hardware), the plugin maps all input RGB colors to the nearest pure primary/secondary color using HSL/HSV classification:
+
+* **White**: Chroma `< 40` (maps to `(255, 255, 255)`)
+* **Red**: Hue `< 15` or `>= 345` (maps to `(255, 0, 0)`)
+* **Yellow**: Hue `15..75` (maps to `(255, 255, 0)`)
+* **Green**: Hue `75..165` (maps to `(0, 255, 0)`)
+* **Cyan**: Hue `165..210` (maps to `(0, 255, 255)`)
+* **Blue**: Hue `210..255` (maps to `(0, 0, 255)`)
+* **Purple**: Hue `255..345` (maps to `(255, 0, 255)`)
+
+All dimming/brightness shades are removed by locking the hardware brightness to a constant `150` and mapping dark/black states (`#000000`) to the closest active color to ensure the backlight is always saturated and rich.
+

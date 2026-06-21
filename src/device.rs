@@ -27,6 +27,11 @@ pub struct Device {
     pub last_host_transition: Mutex<std::time::Instant>,
     pub last_standalone_transition: Mutex<std::time::Instant>,
     pub last_non_zero_scr: Mutex<std::time::Instant>,
+    pub backlight_brightness: Mutex<u8>,
+    pub backlight_last_non_zero_brightness: Mutex<u8>,
+    pub backlight_speed: Mutex<u8>,
+    pub backlight_effect: Mutex<u8>,
+    pub backlight_color: Mutex<(u8, u8, u8)>,
 }
 
 unsafe impl Send for Device {}
@@ -98,12 +103,58 @@ impl Device {
         let _guard = self.write_lock.lock().await;
         let mut mode = self.standalone_mode.lock().await;
         if *mode {
-            unsafe {
-                (self.lib.transport_set_keyboard_backlight_brightness)(self.handle, 4);
-                (self.lib.transport_set_keyboard_lighting_speed)(self.handle, 3);
-                (self.lib.transport_set_keyboard_lighting_effects)(self.handle, 0);
-                (self.lib.transport_set_keyboard_rgb_backlight)(self.handle, 0, 150, 255);
+            let brightness = *self.backlight_brightness.lock().await;
+            let speed = *self.backlight_speed.lock().await;
+            let effect = *self.backlight_effect.lock().await;
+            let (r, g, b) = *self.backlight_color.lock().await;
 
+            // Calculate scaled and calibrated colors mapped to nearest pure hardware color at a fixed single brightness shade
+            let (brightness_val, r_val, g_val, b_val) = {
+                let (pr, pg, pb) = map_to_pure_color(r, g, b);
+                (150, pr, pg, pb)
+            };
+
+            log::info!(
+                "Host-controlled transition backlight: brightness={}, speed={}, effect={}, color=({}, {}, {}) -> Raw: brightness={}, RGB=({}, {}, {})",
+                brightness, speed, effect, r, g, b, brightness_val, r_val, g_val, b_val
+            );
+            unsafe {
+                (self.lib.transport_set_keyboard_lighting_speed)(self.handle, speed);
+                (self.lib.transport_set_keyboard_lighting_effects)(self.handle, effect);
+            }
+
+            // Write raw HID backlight report directly to Interface 1
+            let write_res = (|| -> Result<(), std::io::Error> {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&self.path_int1)?;
+
+                let mut color_report = [0u8; 513];
+                color_report[0] = 0x04;
+                color_report[1..4].copy_from_slice(b"CRT");
+                color_report[6..11].copy_from_slice(b"COLOR");
+                color_report[11] = brightness_val;
+                color_report[12] = r_val;
+                color_report[13] = g_val;
+                color_report[14] = b_val;
+                file.write_all(&color_report)?;
+
+                let mut cpos_report = [0u8; 513];
+                cpos_report[0] = 0x04;
+                cpos_report[1..4].copy_from_slice(b"CRT");
+                cpos_report[6..10].copy_from_slice(b"CPOS");
+                cpos_report[12] = 0x57; // 'W' for Windows
+                file.write_all(&cpos_report)?;
+
+                Ok(())
+            })();
+
+            if let Err(e) = write_res {
+                log::error!("Failed to write raw HID backlight report to {}: {:?}", self.path_int1, e);
+            }
+
+            unsafe {
                 (self.lib.transport_set_reportSize)(self.handle, 513, 1025, 0);
                 (self.lib.transport_set_reportID)(self.handle, 0x04);
                 
@@ -141,6 +192,190 @@ impl Device {
             });
         }
         Ok(())
+    }
+
+    /// Applies all current backlight settings to the physical keyboard.
+    ///
+    /// This writes brightness, speed, effect, and RGB color configurations
+    /// through the FFI interface, refreshes the device, and then executes the required
+    /// report size/ID reset and OS mode switch handshake to commit the configuration.
+    ///
+    /// # Assumptions
+    /// - The device is currently connected and the handle is valid.
+    ///
+    /// # Errors
+    /// - Returns a non-zero FFI return code (as `Err(u32)`) if any backlight configuration call fails.
+    pub async fn apply_all_backlight_settings(&self) -> Result<(), u32> {
+        let brightness = *self.backlight_brightness.lock().await;
+        let speed = *self.backlight_speed.lock().await;
+        let effect = *self.backlight_effect.lock().await;
+        let (r, g, b) = *self.backlight_color.lock().await;
+
+        // Calculate scaled and calibrated colors mapped to nearest pure hardware color at a fixed single brightness shade
+        let (brightness_val, r_val, g_val, b_val) = {
+            let (pr, pg, pb) = map_to_pure_color(r, g, b);
+            (150, pr, pg, pb)
+        };
+
+        let _guard = self.write_lock.lock().await;
+        log::info!(
+            "Applying K1 Pro backlight: brightness={}, speed={}, effect={}, color=({}, {}, {}) -> Raw: brightness={}, RGB=({}, {}, {})",
+            brightness, speed, effect, r, g, b, brightness_val, r_val, g_val, b_val
+        );
+        unsafe {
+            let res = (self.lib.transport_set_keyboard_lighting_speed)(self.handle, speed);
+            if res != 0 {
+                return Err(res);
+            }
+            let res = (self.lib.transport_set_keyboard_lighting_effects)(self.handle, effect);
+            if res != 0 {
+                return Err(res);
+            }
+        }
+
+        // Write raw HID backlight report directly to Interface 1
+        let write_res = (|| -> Result<(), std::io::Error> {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&self.path_int1)?;
+
+            let mut color_report = [0u8; 513];
+            color_report[0] = 0x04;
+            color_report[1..4].copy_from_slice(b"CRT");
+            color_report[6..11].copy_from_slice(b"COLOR");
+            color_report[11] = brightness_val;
+            color_report[12] = r_val;
+            color_report[13] = g_val;
+            color_report[14] = b_val;
+            file.write_all(&color_report)?;
+
+            let mut cpos_report = [0u8; 513];
+            cpos_report[0] = 0x04;
+            cpos_report[1..4].copy_from_slice(b"CRT");
+            cpos_report[6..10].copy_from_slice(b"CPOS");
+            cpos_report[12] = 0x57; // 'W' for Windows
+            file.write_all(&cpos_report)?;
+
+            Ok(())
+        })();
+
+        if let Err(e) = write_res {
+            log::error!("Failed to write raw HID backlight report to {}: {:?}", self.path_int1, e);
+            return Err(1);
+        }
+
+        unsafe {
+            (self.lib.transport_keyboard_os_mode_switch)(self.handle, 0);
+        }
+        Ok(())
+    }
+
+    pub async fn set_keyboard_backlight_brightness(&self, brightness: u8) -> Result<(), u32> {
+        {
+            let mut curr = self.backlight_brightness.lock().await;
+            *curr = brightness;
+            if brightness > 0 {
+                let mut last_non_zero = self.backlight_last_non_zero_brightness.lock().await;
+                *last_non_zero = brightness;
+            }
+        }
+        self.apply_all_backlight_settings().await
+    }
+
+    pub async fn toggle_keyboard_backlight(&self) -> Result<(), u32> {
+        let target_brightness = {
+            let current_brightness = *self.backlight_brightness.lock().await;
+            let last_non_zero = *self.backlight_last_non_zero_brightness.lock().await;
+            if current_brightness > 0 {
+                0
+            } else {
+                last_non_zero
+            }
+        };
+        {
+            let mut curr = self.backlight_brightness.lock().await;
+            *curr = target_brightness;
+        }
+        self.apply_all_backlight_settings().await
+    }
+
+    pub async fn set_keyboard_lighting_effects(&self, effect: u8) -> Result<(), u32> {
+        {
+            let mut curr_eff = self.backlight_effect.lock().await;
+            *curr_eff = effect;
+            if effect == 0 {
+                let mut curr_spd = self.backlight_speed.lock().await;
+                *curr_spd = 0;
+            }
+        }
+        self.apply_all_backlight_settings().await
+    }
+
+    pub async fn set_keyboard_lighting_speed(&self, speed: u8) -> Result<(), u32> {
+        {
+            let mut curr = self.backlight_speed.lock().await;
+            *curr = speed;
+        }
+        self.apply_all_backlight_settings().await
+    }
+
+    pub async fn set_keyboard_rgb_backlight(&self, red: u8, green: u8, blue: u8) -> Result<(), u32> {
+        {
+            let mut curr = self.backlight_color.lock().await;
+            *curr = (red, green, blue);
+        }
+        self.apply_all_backlight_settings().await
+    }
+}
+
+/// Maps any RGB color to the closest solid "pure" hardware color (Red, Green, Blue,
+/// Yellow, Cyan, Purple, or White) using HSL/HSV hue and chroma thresholds.
+///
+/// This ensures that the physical LEDs always render high-saturation, rich colors
+/// without looking washed out or pastel, bypassing the hardware's poor representation
+/// of complex mixed/intermediate shades.
+fn map_to_pure_color(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+    let r_f = r as f32;
+    let g_f = g as f32;
+    let b_f = b as f32;
+
+    let max = r_f.max(g_f).max(b_f);
+    let min = r_f.min(g_f).min(b_f);
+    let chroma = max - min;
+
+    // If color is highly desaturated (low chroma), map to pure White
+    if chroma < 40.0 {
+        return (255, 255, 255);
+    }
+
+    // Calculate Hue in degrees (0..360)
+    let hue = if max == r_f {
+        let mut h = 60.0 * ((g_f - b_f) / chroma);
+        if h < 0.0 {
+            h += 360.0;
+        }
+        h
+    } else if max == g_f {
+        60.0 * ((b_f - r_f) / chroma) + 120.0
+    } else {
+        60.0 * ((r_f - g_f) / chroma) + 240.0
+    };
+
+    // Classify hue into standard pure colors
+    // Adjusted thresholds to map Brown/Orange to Yellow, and keep Red and Purple clean
+    if hue >= 345.0 || hue < 15.0 {
+        (255, 0, 0)       // Red
+    } else if hue >= 15.0 && hue < 75.0 {
+        (255, 255, 0)     // Yellow
+    } else if hue >= 75.0 && hue < 165.0 {
+        (0, 255, 0)       // Green
+    } else if hue >= 165.0 && hue < 210.0 {
+        (0, 255, 255)     // Cyan
+    } else if hue >= 210.0 && hue < 255.0 {
+        (0, 0, 255)       // Blue
+    } else {
+        (255, 0, 255)     // Purple / Magenta
     }
 }
 

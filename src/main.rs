@@ -114,8 +114,267 @@ impl openaction::GlobalEventHandler for GlobalEventHandler {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct BacklightSettings {
+    #[serde(default = "default_mode")]
+    mode: String,
+    
+    #[serde(default = "default_brightness")]
+    brightness_value: u8,
+    
+    #[serde(default = "default_color")]
+    color_value: String, // hex string, e.g. "#0096ff"
+    
+    #[serde(default = "default_effect")]
+    effect_value: u8,
+    
+    #[serde(default = "default_speed")]
+    speed_value: u8,
+
+    #[serde(default = "default_press_action")]
+    press_action: String, // "toggle", "set", "cycle"
+}
+
+fn default_mode() -> String { "brightness".to_string() }
+fn default_brightness() -> u8 { 4 }
+fn default_color() -> String { "#0096ff".to_string() }
+fn default_effect() -> u8 { 0 }
+fn default_speed() -> u8 { 3 }
+fn default_press_action() -> String { "toggle".to_string() }
+
+fn hex_to_rgb(hex: &str) -> Option<(u8, u8, u8)> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+const COLOR_PRESETS: &[(u8, u8, u8)] = &[
+    (255, 0, 0),     // Red
+    (255, 127, 0),   // Orange
+    (255, 255, 0),   // Yellow
+    (0, 255, 0),     // Green
+    (0, 150, 255),   // Cyan
+    (0, 0, 255),     // Blue
+    (127, 0, 255),   // Purple
+    (255, 0, 255),   // Magenta
+    (255, 255, 255), // White
+];
+
+fn find_closest_color_preset(color: (u8, u8, u8)) -> usize {
+    let mut closest_idx = 0;
+    let mut min_diff = u32::MAX;
+    for (idx, &(r, g, b)) in COLOR_PRESETS.iter().enumerate() {
+        let diff = ((r as i32 - color.0 as i32).pow(2)
+            + (g as i32 - color.1 as i32).pow(2)
+            + (b as i32 - color.2 as i32).pow(2)) as u32;
+        if diff < min_diff {
+            min_diff = diff;
+            closest_idx = idx;
+        }
+    }
+    closest_idx
+}
+
+async fn sync_settings_to_host(
+    device: &Device,
+    settings: &BacklightSettings,
+    context: String,
+    outbound: &mut OutboundEventManager,
+) -> Result<(), anyhow::Error> {
+    let brightness = *device.backlight_brightness.lock().await;
+    let speed = *device.backlight_speed.lock().await;
+    let effect = *device.backlight_effect.lock().await;
+    let (r, g, b) = *device.backlight_color.lock().await;
+    let color_hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
+
+    let mut updated = settings.clone();
+    updated.brightness_value = brightness;
+    updated.speed_value = speed;
+    updated.effect_value = effect;
+    updated.color_value = color_hex;
+
+    outbound.set_settings(context, serde_json::to_value(&updated)?)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to set settings: {:?}", e))?;
+    Ok(())
+}
+
+async fn apply_backlight_settings(device: &Device, settings: &BacklightSettings) -> Result<(), anyhow::Error> {
+    {
+        let mut curr_bright = device.backlight_brightness.lock().await;
+        *curr_bright = settings.brightness_value;
+        if settings.brightness_value > 0 {
+            let mut last_non_zero = device.backlight_last_non_zero_brightness.lock().await;
+            *last_non_zero = settings.brightness_value;
+        }
+    }
+    {
+        let mut curr_speed = device.backlight_speed.lock().await;
+        *curr_speed = settings.speed_value;
+    }
+    {
+        let mut curr_eff = device.backlight_effect.lock().await;
+        *curr_eff = settings.effect_value;
+    }
+    if let Some((r, g, b)) = hex_to_rgb(&settings.color_value) {
+        let mut curr_color = device.backlight_color.lock().await;
+        *curr_color = (r, g, b);
+    }
+    
+    device.apply_all_backlight_settings().await
+        .map_err(|e| anyhow::anyhow!("Failed to apply backlight settings: {:#08x}", e))?;
+    Ok(())
+}
+
+async fn handle_press(device: &Device, settings: &BacklightSettings) -> Result<(), anyhow::Error> {
+    match settings.press_action.as_str() {
+        "toggle" => {
+            device.toggle_keyboard_backlight().await
+                .map_err(|e| anyhow::anyhow!("Failed to toggle backlight: {:#08x}", e))?;
+        }
+        "set" => {
+            apply_backlight_settings(device, settings).await?;
+        }
+        "cycle" => {
+            match settings.mode.as_str() {
+                "brightness" => {
+                    let current = *device.backlight_brightness.lock().await;
+                    let next = (current + 1) % 7; // 0 to 6
+                    device.set_keyboard_backlight_brightness(next).await
+                        .map_err(|e| anyhow::anyhow!("Failed to cycle brightness: {:#08x}", e))?;
+                }
+                "color" => {
+                    let current = *device.backlight_color.lock().await;
+                    let current_idx = find_closest_color_preset(current);
+                    let next_idx = (current_idx + 1) % COLOR_PRESETS.len();
+                    let (r, g, b) = COLOR_PRESETS[next_idx];
+                    device.set_keyboard_rgb_backlight(r, g, b).await
+                        .map_err(|e| anyhow::anyhow!("Failed to cycle color: {:#08x}", e))?;
+                }
+                "effect" => {
+                    let current = *device.backlight_effect.lock().await;
+                    let next = (current + 1) % 10; // 0 to 9
+                    device.set_keyboard_lighting_effects(next).await
+                        .map_err(|e| anyhow::anyhow!("Failed to cycle effect: {:#08x}", e))?;
+                }
+                "speed" => {
+                    let current = *device.backlight_speed.lock().await;
+                    let next = (current + 1) % 8; // 0 to 7
+                    device.set_keyboard_lighting_speed(next).await
+                        .map_err(|e| anyhow::anyhow!("Failed to cycle speed: {:#08x}", e))?;
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn handle_dial_rotate(device: &Device, settings: &BacklightSettings, ticks: i16) -> Result<(), anyhow::Error> {
+    match settings.mode.as_str() {
+        "brightness" => {
+            let current = *device.backlight_brightness.lock().await;
+            let target = (current as i16 + ticks).clamp(0, 6) as u8;
+            device.set_keyboard_backlight_brightness(target).await
+                .map_err(|e| anyhow::anyhow!("Failed to set brightness: {:#08x}", e))?;
+        }
+        "color" => {
+            let current = *device.backlight_color.lock().await;
+            let current_idx = find_closest_color_preset(current);
+            let target_idx = (current_idx as i16 + ticks).rem_euclid(COLOR_PRESETS.len() as i16) as usize;
+            let (r, g, b) = COLOR_PRESETS[target_idx];
+            device.set_keyboard_rgb_backlight(r, g, b).await
+                .map_err(|e| anyhow::anyhow!("Failed to set color: {:#08x}", e))?;
+        }
+        "effect" => {
+            let current = *device.backlight_effect.lock().await;
+            let target = (current as i16 + ticks).rem_euclid(10) as u8;
+            device.set_keyboard_lighting_effects(target).await
+                .map_err(|e| anyhow::anyhow!("Failed to set effect: {:#08x}", e))?;
+        }
+        "speed" => {
+            let current = *device.backlight_speed.lock().await;
+            let target = (current as i16 + ticks).clamp(0, 7) as u8;
+            device.set_keyboard_lighting_speed(target).await
+                .map_err(|e| anyhow::anyhow!("Failed to set speed: {:#08x}", e))?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 struct ActionEventHandler {}
-impl openaction::ActionEventHandler for ActionEventHandler {}
+
+impl openaction::ActionEventHandler for ActionEventHandler {
+    async fn did_receive_settings(
+        &self,
+        event: DidReceiveSettingsEvent,
+        _outbound: &mut OutboundEventManager,
+    ) -> EventHandlerResult {
+        log::debug!("did_receive_settings: {:?}", event);
+        if event.action == "st.lynx.plugins.opendeck-k1pro.backlight" {
+            let settings: BacklightSettings = serde_json::from_value(event.payload.settings)?;
+            if let Some(device) = DEVICES.read().await.get(&event.device) {
+                apply_backlight_settings(&device, &settings).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn key_up(
+        &self,
+        event: KeyEvent,
+        outbound: &mut OutboundEventManager,
+    ) -> EventHandlerResult {
+        log::debug!("key_up action: {:?}", event);
+        if event.action == "st.lynx.plugins.opendeck-k1pro.backlight" {
+            let settings: BacklightSettings = serde_json::from_value(event.payload.settings)?;
+            if let Some(device) = DEVICES.read().await.get(&event.device) {
+                handle_press(&device, &settings).await?;
+                let _ = sync_settings_to_host(&device, &settings, event.context, outbound).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn dial_up(
+        &self,
+        event: DialPressEvent,
+        outbound: &mut OutboundEventManager,
+    ) -> EventHandlerResult {
+        log::debug!("dial_up action: {:?}", event);
+        if event.action == "st.lynx.plugins.opendeck-k1pro.backlight" {
+            let settings: BacklightSettings = serde_json::from_value(event.payload.settings)?;
+            if let Some(device) = DEVICES.read().await.get(&event.device) {
+                handle_press(&device, &settings).await?;
+                let _ = sync_settings_to_host(&device, &settings, event.context, outbound).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn dial_rotate(
+        &self,
+        event: DialRotateEvent,
+        outbound: &mut OutboundEventManager,
+    ) -> EventHandlerResult {
+        log::debug!("dial_rotate action: {:?}", event);
+        if event.action == "st.lynx.plugins.opendeck-k1pro.backlight" {
+            let settings: BacklightSettings = serde_json::from_value(event.payload.settings)?;
+            if let Some(device) = DEVICES.read().await.get(&event.device) {
+                handle_dial_rotate(&device, &settings, event.payload.ticks).await?;
+                let _ = sync_settings_to_host(&device, &settings, event.context, outbound).await;
+            }
+        }
+        Ok(())
+    }
+}
 
 async fn shutdown() {
     let tokens = TOKENS.write().await;

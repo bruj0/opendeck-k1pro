@@ -14,6 +14,17 @@
     { "Platform": "mac", "MinimumVersion": "11.3" },
     { "Platform": "windows", "MinimumVersion": "10" }
   ],
-  "Actions": [],
+  "Actions": [
+    {
+      "Icon": "assets/icon",
+      "Name": "Keyboard Backlight",
+      "States": [{ "Image": "actionDefaultImage" }],
+      "Controllers": ["Keypad", "Encoder"],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Configure and control K1 Pro keyboard backlight (brightness, color, speed, effect)",
+      "UUID": "st.lynx.plugins.opendeck-k1pro.backlight",
+      "PropertyInspectorPath": "assets/propertyInspector/backlight.html"
+    }
+  ],
   "DeviceNamespace": "k1"
 }

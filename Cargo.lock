@@ -343,6 +343,7 @@ dependencies = [
 name = "opendeck-k1pro"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "data-url",
  "futures-lite",
  "image",
@@ -350,6 +351,7 @@ dependencies = [
  "libloading",
  "log",
  "openaction",
+ "serde",
  "serde_json",
  "simplelog",
  "tokio",

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>K1 Pro Backlight Control</title>
+		<link rel="stylesheet" href="sdpi.css" />
+		<style>
+			.color-tiles-container {
+				display: flex;
+				flex-direction: row;
+				gap: 8px;
+				flex-wrap: wrap;
+				margin-left: 5px;
+				align-items: center;
+			}
+			.color-tile {
+				width: 20px;
+				height: 20px;
+				border-radius: 50%;
+				cursor: pointer;
+				border: 2px solid transparent;
+				box-shadow: 0 0 2px rgba(0,0,0,0.5);
+				transition: border-color 0.2s, transform 0.1s;
+			}
+			.color-tile:hover {
+				transform: scale(1.15);
+			}
+			.color-tile.active {
+				border-color: #ffffff;
+				box-shadow: 0 0 5px #ffffff;
+			}
+		</style>
+		<script>
+			let update = () => {};
+
+			function connectElgatoStreamDeckSocket(inPort, inPropertyInspectorUUID, inRegisterEvent, inInfo, inActionInfo) {
+				inActionInfo = JSON.parse(inActionInfo);
+
+				const websocket = new WebSocket("ws://localhost:" + inPort);
+				websocket.onopen = () => {
+					websocket.send(JSON.stringify({
+						event: inRegisterEvent,
+						uuid: inPropertyInspectorUUID,
+					}));
+				};
+
+				const settings = inActionInfo.payload.settings || {};
+				const mode = settings.mode || "brightness";
+				const brightness_value = settings.brightness_value !== undefined ? settings.brightness_value : 4;
+				const color_value = settings.color_value || "#00ffff";
+				const effect_value = settings.effect_value !== undefined ? settings.effect_value : 0;
+				const speed_value = settings.speed_value !== undefined ? settings.speed_value : 3;
+				const press_action = settings.press_action || (mode === "brightness" ? "toggle" : "set");
+
+				document.getElementById("mode").value = mode;
+				document.getElementById("brightness_value").value = brightness_value;
+				document.getElementById("brightness_display").innerText = brightness_value;
+				document.getElementById("color_value").value = color_value;
+				document.getElementById("effect_value").value = effect_value;
+				document.getElementById("speed_value").value = speed_value;
+				document.getElementById("speed_display").innerText = speed_value;
+
+				// Initialize color tiles
+				const tiles = document.querySelectorAll(".color-tile");
+				function selectTile(color) {
+					tiles.forEach(t => {
+						if (t.getAttribute("data-color").toLowerCase() === color.toLowerCase()) {
+							t.classList.add("active");
+						} else {
+							t.classList.remove("active");
+						}
+					});
+				}
+				selectTile(color_value);
+
+				tiles.forEach(tile => {
+					tile.onclick = () => {
+						const selectedColor = tile.getAttribute("data-color");
+						document.getElementById("color_value").value = selectedColor;
+						selectTile(selectedColor);
+						update();
+					};
+				});
+
+				function updateUI() {
+					const currentMode = document.getElementById("mode").value;
+					document.getElementById("section-brightness").style.display = currentMode === "brightness" ? "flex" : "none";
+					document.getElementById("section-color").style.display = currentMode === "color" ? "flex" : "none";
+					document.getElementById("section-effect").style.display = currentMode === "effect" ? "flex" : "none";
+					document.getElementById("section-speed").style.display = currentMode === "speed" ? "flex" : "none";
+					
+					const pressSelect = document.getElementById("press_action");
+					const savedPressAction = pressSelect.value || press_action;
+					pressSelect.innerHTML = "";
+					if (currentMode === "brightness") {
+						pressSelect.add(new Option("Toggle On/Off", "toggle"));
+						pressSelect.add(new Option("Set Value", "set"));
+						pressSelect.add(new Option("Cycle (0-6)", "cycle"));
+					} else if (currentMode === "color") {
+						pressSelect.add(new Option("Set Color", "set"));
+						pressSelect.add(new Option("Cycle Colors", "cycle"));
+					} else if (currentMode === "effect") {
+						pressSelect.add(new Option("Set Effect", "set"));
+						pressSelect.add(new Option("Cycle Effects", "cycle"));
+					} else if (currentMode === "speed") {
+						pressSelect.add(new Option("Set Speed", "set"));
+						pressSelect.add(new Option("Cycle Speeds", "cycle"));
+					}
+					
+					// Try to restore previous value if it fits the options
+					const options = Array.from(pressSelect.options).map(o => o.value);
+					if (options.includes(savedPressAction)) {
+						pressSelect.value = savedPressAction;
+					} else {
+						pressSelect.value = "set";
+					}
+				}
+
+				updateUI();
+
+				websocket.onmessage = (evt) => {
+					const data = JSON.parse(evt.data);
+					if (data.event === "didReceiveSettings") {
+						const newSettings = data.payload.settings || {};
+						if (newSettings.mode !== undefined) {
+							document.getElementById("mode").value = newSettings.mode;
+						}
+						if (newSettings.brightness_value !== undefined) {
+							document.getElementById("brightness_value").value = newSettings.brightness_value;
+							document.getElementById("brightness_display").innerText = newSettings.brightness_value;
+						}
+						if (newSettings.color_value !== undefined) {
+							document.getElementById("color_value").value = newSettings.color_value;
+							selectTile(newSettings.color_value);
+						}
+						if (newSettings.effect_value !== undefined) {
+							document.getElementById("effect_value").value = newSettings.effect_value;
+						}
+						if (newSettings.speed_value !== undefined) {
+							document.getElementById("speed_value").value = newSettings.speed_value;
+							document.getElementById("speed_display").innerText = newSettings.speed_value;
+						}
+						if (newSettings.press_action !== undefined) {
+							document.getElementById("press_action").value = newSettings.press_action;
+						}
+						updateUI();
+					}
+				};
+
+				update = () => {
+					const currentMode = document.getElementById("mode").value;
+					const currentBrightness = parseInt(document.getElementById("brightness_value").value);
+					document.getElementById("brightness_display").innerText = currentBrightness;
+					const currentColor = document.getElementById("color_value").value;
+					const currentEffect = parseInt(document.getElementById("effect_value").value);
+					const currentSpeed = parseInt(document.getElementById("speed_value").value);
+					document.getElementById("speed_display").innerText = currentSpeed;
+					const currentPressAction = document.getElementById("press_action").value;
+
+					websocket.send(JSON.stringify({
+						event: "setSettings",
+						context: inActionInfo.context,
+						payload: {
+							mode: currentMode,
+							brightness_value: currentBrightness,
+							color_value: currentColor,
+							effect_value: currentEffect,
+							speed_value: currentSpeed,
+							press_action: currentPressAction
+						},
+					}));
+				};
+
+				document.getElementById("mode").onchange = () => {
+					updateUI();
+					update();
+				};
+			}
+		</script>
+	</head>
+	<body>
+		<div class="sdpi-wrapper">
+			<div class="sdpi-item">
+				<div class="sdpi-item-label">Control Mode</div>
+				<select id="mode" class="sdpi-item-value select">
+					<option value="brightness">Backlight Brightness</option>
+					<option value="color">Backlight Color</option>
+					<option value="effect">Lighting Effect</option>
+					<option value="speed">Effect Speed</option>
+				</select>
+			</div>
+
+			<!-- Brightness Mode Controls -->
+			<div id="section-brightness" class="sdpi-item" style="display: flex;">
+				<div class="sdpi-item-label">Brightness (<span id="brightness_display">4</span>)</div>
+				<input id="brightness_value" oninput="update()" class="sdpi-item-value" type="range" min="0" max="6" />
+			</div>
+
+			<!-- Color Mode Controls -->
+			<div id="section-color" class="sdpi-item" style="display: none; align-items: center;">
+				<div class="sdpi-item-label">Color</div>
+				<div class="sdpi-item-value color-tiles-container">
+					<input id="color_value" type="hidden" />
+					<div class="color-tile" data-color="#ff0000" style="background-color: #ff0000;" title="Red"></div>
+					<div class="color-tile" data-color="#00ff00" style="background-color: #00ff00;" title="Green"></div>
+					<div class="color-tile" data-color="#0000ff" style="background-color: #0000ff;" title="Blue"></div>
+					<div class="color-tile" data-color="#ffff00" style="background-color: #ffff00;" title="Yellow"></div>
+					<div class="color-tile" data-color="#00ffff" style="background-color: #00ffff;" title="Cyan"></div>
+					<div class="color-tile" data-color="#ff00ff" style="background-color: #ff00ff;" title="Purple"></div>
+					<div class="color-tile" data-color="#ffffff" style="background-color: #ffffff; border: 1px solid #777;" title="White"></div>
+				</div>
+			</div>
+
+			<!-- Effect Mode Controls -->
+			<div id="section-effect" class="sdpi-item" style="display: none;">
+				<div class="sdpi-item-label">Effect</div>
+				<select id="effect_value" onchange="update()" class="sdpi-item-value select">
+					<option value="0">0: Static</option>
+					<option value="1">1: Breathing</option>
+					<option value="2">2: Spectrum</option>
+					<option value="3">3: Wave</option>
+					<option value="4">4: Effect 4</option>
+					<option value="5">5: Effect 5</option>
+					<option value="6">6: Effect 6</option>
+					<option value="7">7: Effect 7</option>
+					<option value="8">8: Effect 8</option>
+					<option value="9">9: Effect 9</option>
+				</select>
+			</div>
+
+			<!-- Speed Mode Controls -->
+			<div id="section-speed" class="sdpi-item" style="display: none;">
+				<div class="sdpi-item-label">Speed (<span id="speed_display">3</span>)</div>
+				<input id="speed_value" oninput="update()" class="sdpi-item-value" type="range" min="0" max="7" />
+			</div>
+
+			<!-- Press Action Settings -->
+			<div class="sdpi-item">
+				<div class="sdpi-item-label">Key/Dial Press</div>
+				<select id="press_action" onchange="update()" class="sdpi-item-value select">
+					<option value="toggle">Toggle On/Off</option>
+					<option value="set">Set Value</option>
+					<option value="cycle">Cycle</option>
+				</select>
+			</div>
+		</div>
+	</body>
+</html>
