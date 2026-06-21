@@ -42,12 +42,12 @@ flowchart TD
     A[Host Mode] -->|Knob 1 Click| B[Deregister from OpenDeck]
     B --> C[Send transport_disconnected]
     C --> D[Enter Standalone Mode]
-    D -->|Wait for 1s Cooldown| E{Monitor Raw Files}
-    E -->|Page Switch on Int 1| F[Trigger Reconnect]
-    E -->|Keystroke on Int 0| F
-    F --> G[Perform Handshake]
-    G --> H[Register back with OpenDeck]
-    H --> A
+    D -->|Wait for 1.5s Cooldown| E{Monitor Interface 1}
+    E -->|DEVCFG scr=0 AND last_non_zero_scr > 1.5s| F[Trigger Reconnect]
+    E -->|DEVCFG scr > 0| G[Update last_non_zero_scr]
+    F --> H[Perform Handshake]
+    H --> I[Register back with OpenDeck]
+    I --> A
 ```
 
 ### A. Non-Blocking Raw Reading to Prevent Thread-Pool Exhaustion
@@ -64,19 +64,28 @@ The watcher task (`watcher.rs`) was updated to capture both interface paths:
 * `path_int0` is captured by scanning for the matching serial number on `interface_number == 0`.
 
 ### C. Double-Transition Cooldowns
-To prevent infinite toggle loops (e.g., when the user releases Knob 1 after switching, generating a trailing key release event), we added two mutex-protected timestamp fields to the `Device` struct:
+To prevent infinite toggle loops (e.g., when the user releases Knob 1 after switching, generating a trailing key release event), we added mutex-protected timestamp fields to the `Device` struct:
 * `last_host_transition`: Cooldown window (1 second) to ignore Knob 1 click events immediately after entering host mode.
-* `last_standalone_transition`: Cooldown window (1 second) to ignore Interface 0 keyboard activity immediately after entering standalone mode.
+* `last_standalone_transition`: Cooldown window (1.5 seconds) to ignore reconnect attempts immediately after entering standalone mode.
 
 ### D. Page-Based Turn-vs-Click State Machine
 In standalone mode, K1 Pro profiles use different page screens for button keycodes and encoder rotations:
 * **Page 0 (`scr: 0`)**: The default active page containing click operations.
-* **Page 1 (`scr: 1`)**: The page transitioned to during knob rotation.
+* **Page 1 (`scr: 1`) or Page 2 (`scr: 2`)**: The temporary overlay pages transitioned to during knob rotation.
 
-To ensure that knob turns do not trigger reconnection back to host-controlled mode:
-1. The plugin tracks the current active screen via `standalone_current_scr` (initialized to `Some(0)` upon entering standalone mode).
-2. The Interface 1 reader monitors page updates. If the page transitions from `1` to `0` (a knob click/release action that returns to the main page), it triggers reconnection. Transitions to `1` (rotations) are ignored.
-3. The Interface 0 keyboard report reader checks the current `scr` state. If `standalone_current_scr` is `Some(1)` (rotation page), the keyboard activity is ignored. Reconnection is only triggered if the activity occurs while on `scr: 0` (click page).
+To ensure that knob turns do not trigger reconnection back to host-controlled mode, while correctly detecting a Knob 1 click:
+1. The plugin tracks the last time a non-zero screen (`scr > 0`) was active using the `last_non_zero_scr` timestamp in the `Device` struct.
+2. When a `DEVCFG` report with `scr > 0` is read on Interface 1, `last_non_zero_scr` is updated to the current time.
+3. When a `DEVCFG` report with `scr: 0` is read:
+   - We check if the elapsed time since entering standalone mode (`last_standalone_transition`) is at least 1.5 seconds.
+   - We check if the elapsed time since the last non-zero screen overlay (`last_non_zero_scr`) is at least 1.5 seconds.
+   - If both conditions are met, it is recognized as a Knob 1 click, and the plugin reconnects. Otherwise (if the non-zero overlay screen recently faded, transitioning back to `scr: 0`), the event is ignored.
+4. All Interface 0 standard keyboard activity (such as standard keystrokes) is ignored for reconnection purposes, and the logs are suppressed at `trace` level to eliminate log spam.
+
+#### Reconnection Click Behavior (Firmware Hardcoded Limitation)
+Due to a combination of device firmware behavior and a 1.5-second transition cooldown:
+* **Firmware Behavior**: Once in standalone mode, the device's firmware requires the first click on Knob 1 to transition back to the home page. The subsequent click then sends the status report necessary for the plugin to detect the reconnection request.
+* **Cooldown Protection**: To prevent loop races, the plugin enforces a 1.5-second cooldown after entering standalone mode. If Knob 1 is clicked immediately after entering, the user must wait at least 1.0 second and click it again to trigger reconnection.
 
 ### E. Re-registration Protocol
 When a reconnection condition is met:

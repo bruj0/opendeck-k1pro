@@ -57,7 +57,22 @@ This target:
 5. **Interactive Testing**:
    * Assign an action image to any of the 6 display keys in the OpenDeck UI. The hardware key screen should update immediately.
    * Adjust the brightness slider in the OpenDeck settings. The display keys and ambient backlights should adjust accordingly.
-   * Press physical keys or turn encoders. Verify that OpenDeck prints received input events.
+    * Press physical keys or turn encoders. Verify that OpenDeck prints received input events.
+
+## Standalone Mode (Internal Flash Profiles)
+
+The K1 Pro plugin supports toggling the device between OpenDeck (host-controlled) mode and standalone (internal onboard flash) profiles.
+
+### Quick Guide: Mode Switching
+* **Enter Standalone Mode**: Click **Knob 1** (the top-left dial) once.
+* **Return to OpenDeck Host Mode**: Click **Knob 1** twice (the first click returns the device to its home page, and the second click triggers the switch back to OpenDeck).
+
+### Detailed Technical Behavior
+* **Switching to Standalone Mode**: Press **Knob 1** once. The plugin will deregister the K1 Pro from the OpenDeck host, allowing the device to run profiles stored in its internal flash memory.
+* **Switching Back to Host Mode**: Click **Knob 1** to reconnect the device back to OpenDeck.
+  * **Firmware Hardcoded Behavior**: Once in standalone mode, the device's firmware requires the first click of Knob 1 to switch to the home page; the subsequent click then triggers the status report that reconnects the device back to host mode.
+  * **Cooldown Behavior**: To prevent toggle loops and event races, there is a 1.5-second cooldown enforced immediately after entering standalone mode. If the user clicks Knob 1 immediately after entering standalone mode, they must wait at least a second and click it again to trigger the reconnection back to host mode.
+  * Standard keypresses (e.g. key grid buttons) and knob turns are ignored for reconnection.
 
 ## Scenes, Pages, and Profile Switching
 
