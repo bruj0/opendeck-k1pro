@@ -34,6 +34,7 @@ pub async fn watcher_task(lib: Arc<TransportLib>, token: CancellationToken) {
                     // Filter matching K1 Pro usage page and usage
                     if info.usage_page > 1025 && info.usage == 1 {
                         let serial = wchar_to_string(info.serial_number);
+                        let path_int1 = c_char_to_string(info.path);
                         let id = format!("{}-{}", crate::mappings::DEVICE_NAMESPACE, serial);
                         active_ids.insert(id.clone());
 
@@ -71,13 +72,46 @@ pub async fn watcher_task(lib: Arc<TransportLib>, token: CancellationToken) {
                                 let res_os = (lib.transport_keyboard_os_mode_switch)(handle, 0);
                                 log::info!("OS mode switch result for {}: {}", id, res_os);
 
+                                // Find and open Interface 0 for standard keyboard reports (used during standalone mode)
+                                let mut handle_int0 = None;
+                                let mut path_int0 = None;
+                                let mut scan = devs;
+                                while !scan.is_null() {
+                                    let scan_info = &*scan;
+                                    if scan_info.interface_number == 0 {
+                                        let scan_serial = wchar_to_string(scan_info.serial_number);
+                                        if scan_serial == serial {
+                                            let scan_path = c_char_to_string(scan_info.path);
+                                            path_int0 = Some(scan_path);
+
+                                            let mut h0 = TransportHandle(std::ptr::null_mut());
+                                            let res_int0 = (lib.transport_create)(scan, &mut h0);
+                                            if res_int0 == 0 {
+                                                log::info!("Successfully opened Interface 0 for K1 Pro: {}", id);
+                                                handle_int0 = Some(h0);
+                                            } else {
+                                                log::error!("Failed to create transport handle for K1 Pro Interface 0: {:#08x}", res_int0);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                    scan = scan_info.next;
+                                }
+
                                 let device = Arc::new(Device {
                                     id: id.clone(),
                                     serial_number: serial,
                                     firmware_version,
                                     handle,
+                                    handle_int0,
                                     lib: lib.clone(),
                                     write_lock: tokio::sync::Mutex::new(()),
+                                    standalone_mode: tokio::sync::Mutex::new(false),
+                                    standalone_initial_scr: tokio::sync::Mutex::new(None),
+                                    path_int0,
+                                    path_int1,
+                                    last_host_transition: tokio::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)),
+                                    last_standalone_transition: tokio::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)),
                                 });
                                 new_devices.push(device);
                             } else {

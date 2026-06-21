@@ -350,6 +350,7 @@ dependencies = [
  "libloading",
  "log",
  "openaction",
+ "serde_json",
  "simplelog",
  "tokio",
  "tokio-util",
