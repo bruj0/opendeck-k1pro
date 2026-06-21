@@ -26,6 +26,7 @@ pub struct Device {
     pub path_int1: String,
     pub last_host_transition: Mutex<std::time::Instant>,
     pub last_standalone_transition: Mutex<std::time::Instant>,
+    pub last_non_zero_scr: Mutex<std::time::Instant>,
 }
 
 unsafe impl Send for Device {}
@@ -63,6 +64,9 @@ impl Device {
             
             let mut last_trans = self.last_standalone_transition.lock().await;
             *last_trans = std::time::Instant::now();
+            
+            let mut last_nz = self.last_non_zero_scr.lock().await;
+            *last_nz = std::time::Instant::now() - std::time::Duration::from_secs(60);
             
             log::info!("Switched K1 Pro device to standalone mode.");
 
@@ -270,22 +274,33 @@ async fn device_events_task(device: Arc<Device>, id: String, token: Cancellation
                                 if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&json_str) {
                                     if let Some(scr) = json_val.get("scr").and_then(|v| v.as_i64()) {
                                         let mut current_scr = device.standalone_current_scr.lock().await;
-                                        let prev_scr = *current_scr;
                                         *current_scr = Some(scr);
                                         log::info!("Standalone page index: {}", scr);
-                                        
-                                        if let Some(prev) = prev_scr {
-                                            if prev == 1 && scr == 0 {
-                                                log::info!("Detected standalone page change from turn (1) to click (0). Reconnecting to Host-Controlled mode...");
-                                                drop(current_scr); // Release lock before await
-                                                
-                                                // Close raw file first to release the hidraw device
-                                                raw_file = None;
-                                                
+
+                                        if scr > 0 {
+                                            let mut last_nz = device.last_non_zero_scr.lock().await;
+                                            *last_nz = std::time::Instant::now();
+                                        } else {
+                                            // scr == 0. Check if we should trigger reconnection (Knob 1 click).
+                                            // Ignore if within 1.5s of entering standalone mode, or within 1.5s of a knob turn (scr > 0).
+                                            let elapsed_since_standalone = {
+                                                let last_trans = device.last_standalone_transition.lock().await;
+                                                last_trans.elapsed()
+                                            };
+                                            let elapsed_since_non_zero = {
+                                                let last_nz = device.last_non_zero_scr.lock().await;
+                                                last_nz.elapsed()
+                                            };
+
+                                            if elapsed_since_standalone >= Duration::from_millis(1500)
+                                                && elapsed_since_non_zero >= Duration::from_millis(1500)
+                                            {
+                                                log::info!("Knob 1 click detected on Interface 1 (scr: 0). Reconnecting to Host-Controlled mode...");
+                                                drop(current_scr); // Release lock before transition
+                                                raw_file = None; // Close raw file handle
                                                 if let Err(e) = device.switch_to_host_controlled().await {
                                                     log::error!("Failed to switch to host-controlled mode: {:?}", e);
                                                 }
-                                                tokio::time::sleep(Duration::from_millis(5)).await;
                                                 continue;
                                             }
                                         }
@@ -322,7 +337,7 @@ async fn device_events_task(device: Arc<Device>, id: String, token: Cancellation
         if res == 0 {
             let data = &buffer[..length];
             if length > 0 {
-                log::debug!("Raw HID read from K1 Pro: len={}, bytes={:?}", length, &data[..std::cmp::min(16, length)]);
+                log::trace!("Raw HID read from K1 Pro: len={}, bytes={:?}", length, &data[..std::cmp::min(16, length)]);
             }
             // Verify report ID = 4 and ACK prefix [A, C, K]
             if length >= 12 && data[0] == 0x04 && data[1] == 65 && data[2] == 67 && data[3] == 75 {
@@ -462,7 +477,7 @@ async fn device_events_int0_task(device: Arc<Device>, _id: String, token: Cancel
         match file.read(&mut read_buf) {
             Ok(n) => {
                 if n > 0 {
-                    log::debug!("Raw HID read from K1 Pro Interface 0: len={}, bytes={:?}", n, &read_buf[..std::cmp::min(16, n)]);
+                    log::trace!("Raw HID read from K1 Pro Interface 0: len={}, bytes={:?}", n, &read_buf[..std::cmp::min(16, n)]);
                     let elapsed = {
                         let last_trans = device.last_standalone_transition.lock().await;
                         last_trans.elapsed()
@@ -470,20 +485,7 @@ async fn device_events_int0_task(device: Arc<Device>, _id: String, token: Cancel
                     if elapsed < Duration::from_millis(1000) {
                         log::info!("Ignoring Interface 0 activity right after standalone transition. Elapsed: {:?}", elapsed);
                     } else {
-                        let current_scr = {
-                            let scr_guard = device.standalone_current_scr.lock().await;
-                            *scr_guard
-                        };
-                        
-                        if current_scr == Some(1) {
-                            log::info!("Ignoring Interface 0 activity because device is on turn page (scr: 1).");
-                        } else {
-                            log::info!("Activity detected on K1 Pro Interface 0 (Standalone, scr: {:?}). Reconnecting to Host-Controlled mode...", current_scr);
-                            raw_file = None; // Close file before transition
-                            if let Err(e) = device.switch_to_host_controlled().await {
-                                log::error!("Failed to switch to host-controlled mode: {:?}", e);
-                            }
-                        }
+                        log::trace!("Ignoring Interface 0 activity: bytes={:?}", &read_buf[..std::cmp::min(16, n)]);
                     }
                 }
             }

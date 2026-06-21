@@ -53,7 +53,25 @@ impl openaction::GlobalEventHandler for GlobalEventHandler {
         event: SetImageEvent,
         _outbound: &mut OutboundEventManager,
     ) -> EventHandlerResult {
-        log::debug!("SetImageEvent: {:?}", event);
+        if log::log_enabled!(log::Level::Debug) {
+            let img_desc = match &event.image {
+                Some(img) => {
+                    if img.len() > 50 {
+                        format!("Some(\"{}... (len: {})\")", &img[..50], img.len())
+                    } else {
+                        format!("Some({:?})", img)
+                    }
+                }
+                None => "None".to_string(),
+            };
+            log::debug!(
+                "SetImageEvent {{ device: {:?}, controller: {:?}, position: {:?}, image: {} }}",
+                event.device,
+                event.controller,
+                event.position,
+                img_desc
+            );
+        }
 
         if event.controller == Some("Encoder".to_string()) {
             log::debug!("Skipping image set for encoder");

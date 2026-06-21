@@ -112,6 +112,7 @@ pub async fn watcher_task(lib: Arc<TransportLib>, token: CancellationToken) {
                                     path_int1,
                                     last_host_transition: tokio::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)),
                                     last_standalone_transition: tokio::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)),
+                                    last_non_zero_scr: tokio::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(60)),
                                 });
                                 new_devices.push(device);
                             } else {
